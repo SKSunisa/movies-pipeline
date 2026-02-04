@@ -7,6 +7,11 @@ import os
 from datetime import datetime
 import boto3
 from botocore.exceptions import ClientError
+from dotenv import load_dotenv 
+import platform
+
+# Load environment variables from .env file
+load_dotenv()
 
 # ====================================
 #  Upload CSV file to S3 bucket
@@ -49,7 +54,12 @@ def upload_to_s3(add_timestamp=False):
     # ==========================================
     
     # Path inside Airflow container
-    local_file = "/opt/airflow/data/top_100_movies_full_best_effort.csv"
+    if platform.system() == 'Windows':
+    # รัน local บน Windows
+        local_file = "data/top_100_movies_full_best_effort.csv"
+    else:
+    # รันใน Docker container
+        local_file = "/opt/airflow/data/top_100_movies_full_best_effort.csv"
 
      # S3 key with timestamp
     if add_timestamp:
