@@ -1,0 +1,66 @@
+version: 2
+
+sources:
+  - name: raw
+    description: "Raw data loaded from S3 to Snowflake"
+    database: movies_db
+    schema: raw
+    tables:
+      - name: movies_raw
+        description: "Raw movies data with 100 top-rated movies"
+        columns:
+          # Columns ที่ต้องไม่มี NULL
+          - name: rank
+            description: "Movie ranking (1-100)"
+            tests:
+              - not_null
+              - unique
+          
+          - name: title
+            description: "Movie title"
+            tests:
+              - not_null
+          
+          - name: year
+            description: "Release year"
+            tests:
+              - not_null
+          
+          - name: loaded_at
+            description: "Timestamp when loaded"
+            tests:
+              - not_null
+          
+          # Columns ที่อาจมี NULL (ตาม Data Profiling)
+          - name: genres
+            description: "Movie genres"
+          
+          - name: director
+            description: "Director name"
+          
+          - name: main_actors
+            description: "Main actors"
+          
+          - name: country
+            description: "Country of origin"
+          
+          - name: imdb_rating
+            description: "IMDb rating (0-10). Note: 1% missing data"
+          
+          - name: rotten_tomatoes_pct
+            description: "Rotten Tomatoes score (0-100). Note: 3% missing data"
+          
+          - name: runtime_mins
+            description: "Runtime in minutes. Note: 1% missing data"
+          
+          - name: language
+            description: "Primary language"
+          
+          - name: oscars_won
+            description: "Number of Oscars won"
+          
+          - name: box_office_million
+            description: "Box office revenue in millions USD. Note: 17% missing data"
+          
+          - name: metacritic_score
+            description: "Metacritic score (0-100). Note: 50% missing data"
