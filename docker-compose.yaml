@@ -58,14 +58,15 @@ x-airflow-common:
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__PARALLELISM: 1
+    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: 1
+    AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: 1
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: 'http://airflow-apiserver:8080/execution/'
-    AIRFLOW__CORE__PARALLELISM: 4
-    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: 10
     # yamllint disable rule:line-length
     # Use simple http server on scheduler for health checks
     # See https://airflow.apache.org/docs/apache-airflow/stable/administration-and-deployment/logging-monitoring/check-health.html#scheduler-health-check-server
@@ -128,9 +129,10 @@ services:
       start_period: 5s
     restart: always
 
-  # airflow-webserver:
-  #   <<: *airflow-common
-  #   container_name: movies_airflow_webserver
+
+  airflow-apiserver:
+    <<: *airflow-common
+    container_name: movies_airflow_apiserver
     # =================================================================
     # IMPORTANT: Airflow 3.x Breaking Change
     # =================================================================
@@ -143,25 +145,6 @@ services:
     # but at the command level it must be 'api-server' for Airflow 3.x and above
     # for at the command level it must be 'webserver' for Airflow 2.x
     # =================================================================
-    # command: api-server
-    # ports:
-    #   - "8080:8080"
-    # healthcheck:
-    #   test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
-    #   interval: 30s
-    #   timeout: 10s
-    #   retries: 5
-    #   start_period: 30s
-    # restart: always
-    # depends_on:
-    #   postgres:
-    #     condition: service_healthy
-    #   airflow-init:
-    #     condition: service_completed_successfully
-
-  airflow-apiserver:
-    <<: *airflow-common
-    container_name: movies_airflow_apiserver
     command: api-server
     ports:
       - "8080:8080"
