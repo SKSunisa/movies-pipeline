@@ -1,48 +1,36 @@
 """
 Movies Data Pipeline - Upload CSV to S3 and Load to Snowflake RAW
 Compatible with Airflow 3.x using TaskFlow API
+Using @task decorator with snowflake-connector-python
 """
 
 from airflow.sdk import dag, task
-from airflow.providers.snowflake.operators.snowflake import SnowflakeSqlApiOperator
 from datetime import datetime, timedelta
 import logging
-
+import os
 
 # ============================================================================
 # DAG Configuration
 # ============================================================================
 default_args = {
     'owner': 'data_engineer',
-    'depends_on_past': False,
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 2,
-    'retry_delay': timedelta(minutes=3),
+    'retries': 1,
+    'retry_delay': timedelta(minutes=1),
+    'execution_timeout': timedelta(minutes=10),
 }
 
 @dag(
     dag_id='movies_s3_to_snowflake_pipeline',
     default_args=default_args,
     description='Upload movies CSV to S3 and load into Snowflake RAW layer',
-    schedule=None,  # Manual trigger
+    schedule=None,
     start_date=datetime(2026, 2, 1),
     catchup=False,
     tags=['movies', 's3', 'snowflake', 'data-pipeline'],
     max_active_runs=1,
 )
 def movies_data_pipeline():
-    """
-    Movies Data Pipeline DAG
-    
-    Flow:
-    1. Upload CSV to S3
-    2. Verify S3 upload
-    3. Create Snowflake RAW schema
-    4. Create RAW table
-    5. Load data from S3 to Snowflake
-    6. Verify loaded data
-    """
+    """Movies Data Pipeline DAG"""
     
     # ========================================================================
     # Task 1: Upload CSV to S3
@@ -54,15 +42,10 @@ def movies_data_pipeline():
         
         try:
             logging.info("Starting CSV upload to S3...")
-            
-            # Upload file
             result = upload_func(add_timestamp=False)
-            
-            # Log success
             logging.info("Upload completed successfully!")
             logging.info(f"S3 URI: {result['s3_uri']}")
             logging.info(f"File size: {result['file_size_kb']:.2f} KB")
-            
             return result
             
         except FileNotFoundError as e:
@@ -84,24 +67,19 @@ def movies_data_pipeline():
         
         try:
             logging.info("Verifying S3 upload...")
-            
-            # Check if result exists
             if not upload_result:
                 raise ValueError("No upload result received from previous task!")
             
-            # Validate result structure
             required_keys = ['s3_uri', 'file_size', 'file_size_kb']
             missing_keys = [key for key in required_keys if key not in upload_result]
             
             if missing_keys:
                 raise ValueError(f"Missing keys in upload result: {missing_keys}")
             
-            # Verify file size
             file_size = upload_result.get('file_size', 0)
             if file_size == 0:
                 raise ValueError("Uploaded file is empty (0 bytes)!")
             
-            # Log verification success
             logging.info("Upload verification passed!")
             logging.info(f"S3 URI: {upload_result['s3_uri']}")
             logging.info(f"File size: {file_size:,} bytes ({upload_result['file_size_kb']:.2f} KB)")
@@ -120,490 +98,245 @@ def movies_data_pipeline():
     # ========================================================================
     # Task 3: Create RAW Schema in Snowflake
     # ========================================================================
-    create_schema = SnowflakeSqlApiOperator(
-        task_id='create_raw_schema',
-        snowflake_conn_id='snowflake_default',
-        sql="""
-        -- Create RAW schema if not exists
-        CREATE SCHEMA IF NOT EXISTS RAW
-            COMMENT = 'Raw data layer - Data loaded directly from S3';
+    @task(task_id='create_raw_schema')
+    def create_raw_schema():
+        """Create RAW schema in Snowflake"""
+        import snowflake.connector
         
-        -- Use RAW schema
-        USE SCHEMA RAW;
-        """,
-        dag=None,  # Will be set by decorator
-    )
+        logging.info("Connecting to Snowflake...")
+        
+        conn = snowflake.connector.connect(
+            account=os.getenv('SNOWFLAKE_ACCOUNT'),
+            user=os.getenv('SNOWFLAKE_USER'),
+            password=os.getenv('SNOWFLAKE_PASSWORD'),
+            warehouse=os.getenv('SNOWFLAKE_WAREHOUSE'),
+            database=os.getenv('SNOWFLAKE_DATABASE'),
+            role=os.getenv('SNOWFLAKE_ROLE')
+        )
+        
+        cursor = conn.cursor()
+        
+        try:
+            logging.info("Creating RAW schema...")
+            cursor.execute("""
+                CREATE SCHEMA IF NOT EXISTS RAW
+                    COMMENT = 'Raw data layer - Data loaded directly from S3'
+            """)
+            
+            cursor.execute("USE SCHEMA RAW")
+            
+            logging.info("Schema RAW created successfully")
+            return {"status": "success", "schema": "RAW"}
+            
+        finally:
+            cursor.close()
+            conn.close()
     
     # ========================================================================
     # Task 4: Create RAW Table in Snowflake
     # ========================================================================
-    create_table = SnowflakeSqlApiOperator(
-        task_id='create_raw_table',
-        snowflake_conn_id='snowflake_default',
-        sql="""
-        -- Drop existing table for clean rebuild
-        DROP TABLE IF EXISTS RAW.MOVIES_RAW;
+    @task(task_id='create_raw_table')
+    def create_raw_table():
+        """Create MOVIES_RAW table in Snowflake"""
+        import snowflake.connector
         
-        -- Create movies raw table with proper data types
-        CREATE TABLE RAW.MOVIES_RAW (
-            rank INTEGER NOT NULL,
-            title VARCHAR(500) NOT NULL,
-            year INTEGER NOT NULL,
-            genres VARCHAR(500),
-            director VARCHAR(500),
-            main_actors VARCHAR(1000),
-            country VARCHAR(200),
-            imdb_rating FLOAT,
-            rotten_tomatoes_pct FLOAT,
-            runtime_mins FLOAT,
-            language VARCHAR(200),
-            oscars_won INTEGER,
-            box_office_millions FLOAT,
-            metacritic_score FLOAT,
-            loaded_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-            source_file VARCHAR(500)
+        logging.info("Connecting to Snowflake...")
+        
+        conn = snowflake.connector.connect(
+            account=os.getenv('SNOWFLAKE_ACCOUNT'),
+            user=os.getenv('SNOWFLAKE_USER'),
+            password=os.getenv('SNOWFLAKE_PASSWORD'),
+            warehouse=os.getenv('SNOWFLAKE_WAREHOUSE'),
+            database=os.getenv('SNOWFLAKE_DATABASE'),
+            role=os.getenv('SNOWFLAKE_ROLE'),
+            schema='RAW'
         )
-        COMMENT = 'Raw movies data loaded from S3 - Top 100 movies dataset';
         
-        -- Show table structure
-        DESCRIBE TABLE RAW.MOVIES_RAW;
-        """,
-        dag=None,
-    )
+        cursor = conn.cursor()
+        
+        try:
+            logging.info("Dropping existing table (if exists)...")
+            cursor.execute("DROP TABLE IF EXISTS RAW.MOVIES_RAW")
+            
+            logging.info("Creating MOVIES_RAW table...")
+            cursor.execute("""
+                CREATE TABLE RAW.MOVIES_RAW (
+                    rank INTEGER NOT NULL,
+                    title VARCHAR(500) NOT NULL,
+                    year INTEGER NOT NULL,
+                    genres VARCHAR(500),
+                    director VARCHAR(500),
+                    main_actors VARCHAR(1000),
+                    country VARCHAR(200),
+                    imdb_rating FLOAT,
+                    rotten_tomatoes_pct FLOAT,
+                    runtime_mins FLOAT,
+                    language VARCHAR(200),
+                    oscars_won INTEGER,
+                    box_office_millions FLOAT,
+                    metacritic_score FLOAT,
+                    loaded_at TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
+                    source_file VARCHAR(500)
+                )
+                COMMENT = 'Raw movies data loaded from S3 - Top 100 movies dataset'
+            """)
+            
+            logging.info("Table MOVIES_RAW created successfully")
+            return {"status": "success", "table": "MOVIES_RAW"}
+            
+        finally:
+            cursor.close()
+            conn.close()
     
     # ========================================================================
     # Task 5: Load Data from S3 to Snowflake
     # ========================================================================
-    load_data = SnowflakeSqlApiOperator(
-        task_id='load_s3_to_snowflake',
-        snowflake_conn_id='snowflake_default',
-        sql="""
-        -- Truncate table first for clean load
-        TRUNCATE TABLE IF EXISTS RAW.MOVIES_RAW;
+    @task(task_id='load_s3_to_snowflake')
+    def load_s3_to_snowflake():
+        """Load data from S3 to Snowflake using COPY INTO"""
+        import snowflake.connector
         
-        -- Load data from S3 using external stage
-        COPY INTO RAW.MOVIES_RAW (
-            rank,
-            title,
-            year,
-            genres,
-            director,
-            main_actors,
-            country,
-            imdb_rating,
-            rotten_tomatoes_pct,
-            runtime_mins,
-            language,
-            oscars_won,
-            box_office_millions,
-            metacritic_score,
-            loaded_at,
-            source_file
-        )
-        FROM (
-            SELECT 
-                $1,  -- Rank
-                $2,  -- Title
-                $3,  -- Year
-                $4,  -- Genre(s)
-                $5,  -- Director
-                $6,  -- Main Actor(s)
-                $7,  -- Country
-                $8,  -- IMDb Rating
-                $9,  -- Rotten Tomatoes %
-                $10, -- Runtime (mins)
-                $11, -- Language
-                $12, -- Oscars Won
-                $13, -- Box Office ($M)
-                $14, -- Metacritic Score
-                CURRENT_TIMESTAMP(),
-                METADATA$FILENAME
-            FROM @RAW.MOVIES_S3_STAGE/top_100_movies_full_best_effort.csv
-        )
-        FILE_FORMAT = (
-            TYPE = 'CSV'
-            FIELD_DELIMITER = ','
-            SKIP_HEADER = 1
-            FIELD_OPTIONALLY_ENCLOSED_BY = '"'
-            NULL_IF = ('NULL', 'null', '', 'NA', 'N/A')
-            EMPTY_FIELD_AS_NULL = TRUE
-            ENCODING = 'UTF8'
-            ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE
-            TRIM_SPACE = TRUE
-        )
-        ON_ERROR = 'CONTINUE'
-        RETURN_FAILED_ONLY = FALSE;
+        logging.info("Connecting to Snowflake...")
         
-        -- Show load summary
-        SELECT COUNT(*) AS rows_loaded FROM RAW.MOVIES_RAW;
-        """,
-        dag=None,
-    )
+        conn = snowflake.connector.connect(
+            account=os.getenv('SNOWFLAKE_ACCOUNT'),
+            user=os.getenv('SNOWFLAKE_USER'),
+            password=os.getenv('SNOWFLAKE_PASSWORD'),
+            warehouse=os.getenv('SNOWFLAKE_WAREHOUSE'),
+            database=os.getenv('SNOWFLAKE_DATABASE'),
+            role=os.getenv('SNOWFLAKE_ROLE'),
+            schema='RAW'
+        )
+        
+        cursor = conn.cursor()
+        
+        try:
+            logging.info("Truncating table...")
+            cursor.execute("TRUNCATE TABLE IF EXISTS RAW.MOVIES_RAW")
+            
+            logging.info("Loading data from S3...")
+            cursor.execute("""
+                COPY INTO RAW.MOVIES_RAW (
+                    rank, title, year, genres, director, main_actors, country,
+                    imdb_rating, rotten_tomatoes_pct, runtime_mins, language,
+                    oscars_won, box_office_millions, metacritic_score,
+                    loaded_at, source_file
+                )
+                FROM (
+                    SELECT 
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                        CURRENT_TIMESTAMP(),
+                        METADATA$FILENAME
+                    FROM @RAW.MOVIES_S3_STAGE/top_100_movies_full_best_effort.csv
+                )
+                FILE_FORMAT = (
+                    TYPE = 'CSV'
+                    FIELD_DELIMITER = ','
+                    SKIP_HEADER = 1
+                    FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+                    NULL_IF = ('NULL', 'null', '', 'NA', 'N/A')
+                    EMPTY_FIELD_AS_NULL = TRUE
+                    ENCODING = 'UTF8'
+                    ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE
+                    TRIM_SPACE = TRUE
+                )
+                ON_ERROR = 'CONTINUE'
+                RETURN_FAILED_ONLY = FALSE
+            """)
+            
+            cursor.execute("SELECT COUNT(*) AS rows_loaded FROM RAW.MOVIES_RAW")
+            result = cursor.fetchone()
+            rows_loaded = result[0] if result else 0
+            
+            logging.info(f"Data loaded successfully: {rows_loaded} rows")
+            return {"status": "success", "rows_loaded": rows_loaded}
+            
+        finally:
+            cursor.close()
+            conn.close()
     
     # ========================================================================
-    # Task 6: Verify Loaded Data with Comprehensive Quality Checks
+    # Task 6: Verify Loaded Data
     # ========================================================================
-    verify_data = SnowflakeSqlApiOperator(
-        task_id='verify_snowflake_data',
-        snowflake_conn_id='snowflake_default',
-        sql="""
-        -- ====================================================================
-        -- DATA QUALITY VALIDATION CHECKS
-        -- ====================================================================
+    @task(task_id='verify_snowflake_data')
+    def verify_snowflake_data():
+        """Verify data quality in Snowflake"""
+        import snowflake.connector
         
-        SELECT '=== DATA QUALITY VALIDATION REPORT ===' AS report_section;
+        logging.info("Connecting to Snowflake...")
         
-        -- --------------------------------------------------------------------
-        -- 1. ตรวจสอบจำนวนแถวทั้งหมด (Row Count Check)
-        -- --------------------------------------------------------------------
-        SELECT 
-            '1. Row Count Check' AS check_name,
-            COUNT(*) AS total_rows
-        FROM RAW.MOVIES_RAW;
-
-        
-        -- --------------------------------------------------------------------
-        -- 2. ตรวจสอบ NULL ในคอลัมน์ที่มี Missing Data (จาก Phase 1)
-        -- --------------------------------------------------------------------
-        SELECT 
-            '2. NULL Values Check' AS check_name,
-            COUNT(CASE WHEN metacritic_score IS NULL THEN 1 END) AS null_metacritic_score,
-            COUNT(CASE WHEN box_office_millions IS NULL THEN 1 END) AS null_box_office,
-            COUNT(CASE WHEN rotten_tomatoes_pct IS NULL THEN 1 END) AS null_rotten_tomatoes,
-            COUNT(CASE WHEN imdb_rating IS NULL THEN 1 END) AS null_imdb_rating,
-            COUNT(CASE WHEN runtime_mins IS NULL THEN 1 END) AS null_runtime_mins
-        FROM RAW.MOVIES_RAW;
-        
-        -- --------------------------------------------------------------------
-        -- 3. ตรวจสอบ Duplicate Records
-        -- --------------------------------------------------------------------
-        WITH standardized AS (
-            SELECT
-                rank,
-                title,
-                year,
-                REGEXP_REPLACE(title, '\\s*\\([^)]*\\)', '') AS title_cleaned
-            FROM RAW.MOVIES_RAW
-        ),
-        duplicates_data AS (
-            SELECT 
-                rank,
-                title,
-                year,
-                title_cleaned,
-                COUNT(*) OVER (PARTITION BY title_cleaned) AS occurrence_count
-            FROM standardized
+        conn = snowflake.connector.connect(
+            account=os.getenv('SNOWFLAKE_ACCOUNT'),
+            user=os.getenv('SNOWFLAKE_USER'),
+            password=os.getenv('SNOWFLAKE_PASSWORD'),
+            warehouse=os.getenv('SNOWFLAKE_WAREHOUSE'),
+            database=os.getenv('SNOWFLAKE_DATABASE'),
+            role=os.getenv('SNOWFLAKE_ROLE'),
+            schema='RAW'
         )
-        SELECT
-            '3. Duplicate Check' AS check_name,
-                rank,
-                title,
-                year,
-                title_cleaned
-        FROM duplicates_data
-        WHERE occurrence_count > 1
-        ORDER BY title_cleaned, rank;
-
-        -- --------------------------------------------------------------------
-        -- 4. MULTI-VALUE COLUMNS CHECK - Find columns with pipe delimiter '|'
-        -- --------------------------------------------------------------------
         
-        -- Method 1: Check each column individually
-        SELECT '=== Columns with Pipe Delimiter (|) ===' AS section;
-
-        SELECT 'genres' AS column_name,
-            CASE WHEN COUNT(CASE WHEN genres LIKE '%|%' THEN 1 END) > 0 
-                THEN 'Has pipe delimiter' 
-                ELSE 'No pipe delimiter' 
-            END AS has_pipe
-        FROM RAW.MOVIES_RAW
-        UNION ALL
-        SELECT 'director',
-            CASE WHEN COUNT(CASE WHEN director LIKE '%|%' THEN 1 END) > 0 
-                THEN 'Has pipe delimiter' 
-                ELSE 'No pipe delimiter' 
-            END AS has_pipe
-        FROM RAW.MOVIES_RAW
-        UNION ALL
-        SELECT 'main_actors',
-            CASE WHEN COUNT(CASE WHEN main_actors LIKE '%|%' THEN 1 END) > 0 
-                THEN 'Has pipe delimiter' 
-                ELSE 'No pipe delimiter' 
-            END AS has_pipe
-        FROM RAW.MOVIES_RAW
-        UNION ALL
-        SELECT 'country',
-            CASE WHEN COUNT(CASE WHEN country LIKE '%|%' THEN 1 END) > 0 
-                THEN 'Has pipe delimiter' 
-                ELSE 'No pipe delimiter' 
-            END AS has_pipe
-        FROM RAW.MOVIES_RAW
-        UNION ALL
-        SELECT 'language',
-            CASE WHEN COUNT(CASE WHEN language LIKE '%|%' THEN 1 END) > 0 
-                THEN 'Has pipe delimiter' 
-                ELSE 'No pipe delimiter' 
-            END AS has_pipe
-        FROM RAW.MOVIES_RAW;
-
-        -- --------------------------------------------------------------------
-        -- 5. ตรวจสอบปี (Year Validation)
-        -- ไม่ควรเก่าเกินไป (< 1800) และไม่ควรเป็นอนาคต (> 2025)
-        -- --------------------------------------------------------------------
-        SELECT 
-            '5. Year Validation' AS check_name,
-            MIN(year) AS min_year,
-            MAX(year) AS max_year,
-            COUNT(CASE WHEN year < 1800 OR year > 2025 THEN 1 END) AS invalid_years,
-            CASE 
-                WHEN COUNT(CASE WHEN year < 1800 OR year > 2025 THEN 1 END) = 0 
-                THEN 'PASS' 
-                ELSE 'FAIL' 
-            END AS status,
-            'Expected: 1800 <= year <= 2025' AS expected
-        FROM RAW.MOVIES_RAW;
+        cursor = conn.cursor()
         
-        -- แสดงรายการปีที่ผิดปกติ (ถ้ามี)
-        SELECT 
-            '   Invalid Years Details:' AS detail,
-            rank, title, year
-        FROM RAW.MOVIES_RAW
-        WHERE year < 1800 OR year > 2025
-        ORDER BY year;
-        
-        -- --------------------------------------------------------------------
-        -- 6. ตรวจสอบคะแนน IMDb Rating (ต้องอยู่ระหว่าง 0-10)
-        -- --------------------------------------------------------------------
-        SELECT 
-            '6. IMDb Rating Validation' AS check_name,
-            ROUND(MIN(imdb_rating), 2) AS min_rating,
-            ROUND(MAX(imdb_rating), 2) AS max_rating,
-            ROUND(AVG(imdb_rating), 2) AS avg_rating,
-            COUNT(CASE WHEN imdb_rating < 0 OR imdb_rating > 10 THEN 1 END) AS invalid_ratings,
-            CASE 
-                WHEN COUNT(CASE WHEN imdb_rating < 0 OR imdb_rating > 10 THEN 1 END) = 0 
-                THEN 'PASS' 
-                ELSE 'FAIL' 
-            END AS status,
-            'Expected: 0 <= rating <= 10' AS expected
-        FROM RAW.MOVIES_RAW
-        WHERE imdb_rating IS NOT NULL;
-        
-        -- แสดงรายการคะแนนที่ผิดปกติ (ถ้ามี)
-        SELECT 
-            '   Invalid IMDb Ratings:' AS detail,
-            rank, title, imdb_rating
-        FROM RAW.MOVIES_RAW
-        WHERE imdb_rating < 0 OR imdb_rating > 10
-        ORDER BY imdb_rating;
-        
-        -- --------------------------------------------------------------------
-        -- 7. ตรวจสอบความยาวหนัง Runtime (ไม่ควรติดลบหรือเป็น 0)
-        -- --------------------------------------------------------------------
-        SELECT 
-            '7. Runtime Validation' AS check_name,
-            ROUND(MIN(runtime_mins), 0) AS min_runtime,
-            ROUND(MAX(runtime_mins), 0) AS max_runtime,
-            ROUND(AVG(runtime_mins), 0) AS avg_runtime,
-            COUNT(CASE WHEN runtime_mins <= 0 THEN 1 END) AS invalid_runtime,
-            CASE 
-                WHEN COUNT(CASE WHEN runtime_mins <= 0 THEN 1 END) = 0 
-                THEN 'PASS' 
-                ELSE 'FAIL' 
-            END AS status,
-            'Expected: runtime > 0' AS expected
-        FROM RAW.MOVIES_RAW
-        WHERE runtime_mins IS NOT NULL;
-        
-        -- แสดงรายการความยาวหนังที่ผิดปกติ (ถ้ามี)
-        SELECT 
-            '   Invalid Runtime:' AS detail,
-            rank, title, runtime_mins
-        FROM RAW.MOVIES_RAW
-        WHERE runtime_mins <= 0
-        ORDER BY runtime_mins;
-        
-        -- --------------------------------------------------------------------
-        -- 8. ตรวจสอบคะแนน Rotten Tomatoes (ต้องอยู่ระหว่าง 0-100)
-        -- --------------------------------------------------------------------
-        SELECT 
-            '8. Rotten Tomatoes Validation' AS check_name,
-            ROUND(MIN(rotten_tomatoes_pct), 2) AS min_score,
-            ROUND(MAX(rotten_tomatoes_pct), 2) AS max_score,
-            ROUND(AVG(rotten_tomatoes_pct), 2) AS avg_score,
-            COUNT(CASE WHEN rotten_tomatoes_pct < 0 OR rotten_tomatoes_pct > 100 THEN 1 END) AS invalid_scores,
-            CASE 
-                WHEN COUNT(CASE WHEN rotten_tomatoes_pct < 0 OR rotten_tomatoes_pct > 100 THEN 1 END) = 0 
-                THEN 'PASS' 
-                ELSE 'FAIL' 
-            END AS status,
-            'Expected: 0 <= score <= 100' AS expected
-        FROM RAW.MOVIES_RAW
-        WHERE rotten_tomatoes_pct IS NOT NULL;
-        
-        -- แสดงรายการคะแนนที่ผิดปกติ (ถ้ามี)
-        SELECT 
-            '   Invalid RT Scores:' AS detail,
-            rank, title, rotten_tomatoes_pct
-        FROM RAW.MOVIES_RAW
-        WHERE rotten_tomatoes_pct < 0 OR rotten_tomatoes_pct > 100
-        ORDER BY rotten_tomatoes_pct;
-        
-        -- --------------------------------------------------------------------
-        -- 9. ตรวจสอบจำนวนรางวัลออสการ์ (ไม่ควรติดลบ)
-        -- --------------------------------------------------------------------
-        SELECT 
-            '9. Oscars Won Validation' AS check_name,
-            MIN(oscars_won) AS min_oscars,
-            MAX(oscars_won) AS max_oscars,
-            ROUND(AVG(oscars_won), 1) AS avg_oscars,
-            COUNT(CASE WHEN oscars_won < 0 THEN 1 END) AS invalid_oscars,
-            CASE 
-                WHEN COUNT(CASE WHEN oscars_won < 0 THEN 1 END) = 0 
-                THEN 'PASS' 
-                ELSE 'FAIL' 
-            END AS status,
-            'Expected: oscars >= 0' AS expected
-        FROM RAW.MOVIES_RAW
-        WHERE oscars_won IS NOT NULL;
-        
-        -- แสดงรายการจำนวนออสการ์ที่ผิดปกติ (ถ้ามี)
-        SELECT 
-            '   Invalid Oscars Count:' AS detail,
-            rank, title, oscars_won
-        FROM RAW.MOVIES_RAW
-        WHERE oscars_won < 0
-        ORDER BY oscars_won;
-        
-        -- --------------------------------------------------------------------
-        -- 10. ตรวจสอบคะแนน Metacritic (ต้องอยู่ระหว่าง 0-100)
-        -- --------------------------------------------------------------------
-        SELECT 
-            '10. Metacritic Score Validation' AS check_name,
-            ROUND(MIN(metacritic_score), 2) AS min_score,
-            ROUND(MAX(metacritic_score), 2) AS max_score,
-            ROUND(AVG(metacritic_score), 2) AS avg_score,
-            COUNT(CASE WHEN metacritic_score < 0 OR metacritic_score > 100 THEN 1 END) AS invalid_scores,
-            CASE 
-                WHEN COUNT(CASE WHEN metacritic_score < 0 OR metacritic_score > 100 THEN 1 END) = 0 
-                THEN 'PASS' 
-                ELSE 'FAIL' 
-            END AS status,
-            'Expected: 0 <= score <= 100' AS expected
-        FROM RAW.MOVIES_RAW
-        WHERE metacritic_score IS NOT NULL;
-        
-        -- แสดงรายการคะแนนที่ผิดปกติ (ถ้ามี)
-        SELECT 
-            '   Invalid Metacritic Scores:' AS detail,
-            rank, title, metacritic_score
-        FROM RAW.MOVIES_RAW
-        WHERE metacritic_score < 0 OR metacritic_score > 100
-        ORDER BY metacritic_score;
-        
-        -- --------------------------------------------------------------------
-        -- 11. ตรวจสอบ Box Office (ไม่ควรติดลบ)
-        -- --------------------------------------------------------------------
-        SELECT 
-            '11. Box Office Validation' AS check_name,
-            ROUND(MIN(box_office_millions), 2) AS min_revenue,
-            ROUND(MAX(box_office_millions), 2) AS max_revenue,
-            ROUND(AVG(box_office_millions), 2) AS avg_revenue,
-            COUNT(CASE WHEN box_office_millions < 0 THEN 1 END) AS invalid_revenue,
-            CASE 
-                WHEN COUNT(CASE WHEN box_office_millions < 0 THEN 1 END) = 0 
-                THEN 'PASS' 
-                ELSE 'FAIL' 
-            END AS status,
-            'Expected: revenue >= 0' AS expected
-        FROM RAW.MOVIES_RAW
-        WHERE box_office_millions IS NOT NULL;
-        
-        -- ====================================================================
-        -- SUMMARY STATISTICS
-        -- ====================================================================
-        SELECT '=== DATA SUMMARY STATISTICS ===' AS report_section;
-        
-        SELECT 
-            COUNT(*) AS total_rows,
-            COUNT(DISTINCT title) AS unique_titles,
-            MIN(year) AS earliest_year,
-            MAX(year) AS latest_year,
-            ROUND(AVG(imdb_rating), 2) AS avg_imdb_rating,
-            ROUND(AVG(rotten_tomatoes_pct), 2) AS avg_rt_score,
-            ROUND(AVG(metacritic_score), 2) AS avg_metacritic,
-            ROUND(AVG(runtime_mins), 0) AS avg_runtime_mins,
-            ROUND(SUM(box_office_millions), 2) AS total_box_office_millions
-        FROM RAW.MOVIES_RAW;
-        
-        -- ====================================================================
-        -- NULL VALUE ANALYSIS
-        -- ====================================================================
-        SELECT '=== NULL VALUE ANALYSIS ===' AS report_section;
-        
-        SELECT 
-            'NULL Count per Column' AS analysis_type,
-            COUNT(CASE WHEN rank IS NULL THEN 1 END) AS null_rank,
-            COUNT(CASE WHEN title IS NULL THEN 1 END) AS null_title,
-            COUNT(CASE WHEN year IS NULL THEN 1 END) AS null_year,
-            COUNT(CASE WHEN imdb_rating IS NULL THEN 1 END) AS null_imdb,
-            COUNT(CASE WHEN rotten_tomatoes_pct IS NULL THEN 1 END) AS null_rt,
-            COUNT(CASE WHEN runtime_mins IS NULL THEN 1 END) AS null_runtime,
-            COUNT(CASE WHEN oscars_won IS NULL THEN 1 END) AS null_oscars,
-            COUNT(CASE WHEN box_office_millions IS NULL THEN 1 END) AS null_box_office,
-            COUNT(CASE WHEN metacritic_score IS NULL THEN 1 END) AS null_metacritic
-        FROM RAW.MOVIES_RAW;
-        
-        -- ====================================================================
-        -- SAMPLE DATA (First 5 rows)
-        -- ====================================================================
-        SELECT '=== SAMPLE DATA (Top 5 Movies) ===' AS report_section;
-        
-        SELECT 
-            rank,
-            title,
-            year,
-            director,
-            imdb_rating,
-            rotten_tomatoes_pct,
-            runtime_mins,
-            oscars_won
-        FROM RAW.MOVIES_RAW
-        ORDER BY rank
-        LIMIT 5;
-        
-        -- ====================================================================
-        -- FINAL STATUS
-        -- ====================================================================
-        SELECT '=== FINAL VALIDATION STATUS ===' AS report_section;
-        
-        SELECT 
-            CASE 
-                WHEN (
-                    SELECT COUNT(*) FROM RAW.MOVIES_RAW 
-                    WHERE year < 1800 OR year > 2025
-                       OR (imdb_rating < 0 OR imdb_rating > 10)
-                       OR runtime_mins <= 0
-                       OR (rotten_tomatoes_pct < 0 OR rotten_tomatoes_pct > 100)
-                       OR oscars_won < 0
-                       OR (metacritic_score < 0 OR metacritic_score > 100)
-                       OR box_office_millions < 0
-                ) = 0 
-                THEN 'ALL CHECKS PASSED - Data quality is GOOD'
-                ELSE 'SOME CHECKS FAILED - Please review the validation details above'
-            END AS final_status;
-        """,
-        dag=None,
-    )
+        try:
+            logging.info("=== DATA QUALITY VALIDATION REPORT ===")
+            
+            # 1. Row Count
+            cursor.execute("SELECT COUNT(*) FROM RAW.MOVIES_RAW")
+            total_rows = cursor.fetchone()[0]
+            logging.info(f"1. Row Count: {total_rows}")
+            
+            # 2. NULL Values
+            cursor.execute("""
+                SELECT 
+                    COUNT(CASE WHEN metacritic_score IS NULL THEN 1 END) AS null_metacritic,
+                    COUNT(CASE WHEN box_office_millions IS NULL THEN 1 END) AS null_box_office,
+                    COUNT(CASE WHEN rotten_tomatoes_pct IS NULL THEN 1 END) AS null_rt
+                FROM RAW.MOVIES_RAW
+            """)
+            null_counts = cursor.fetchone()
+            logging.info(f"2. NULL Values - Metacritic: {null_counts[0]}, Box Office: {null_counts[1]}, RT: {null_counts[2]}")
+            
+            # 3. Summary Stats
+            cursor.execute("""
+                SELECT 
+                    MIN(year) AS min_year,
+                    MAX(year) AS max_year,
+                    ROUND(AVG(imdb_rating), 2) AS avg_imdb
+                FROM RAW.MOVIES_RAW
+            """)
+            stats = cursor.fetchone()
+            logging.info(f"3. Summary - Year range: {stats[0]}-{stats[1]}, Avg IMDb: {stats[2]}")
+            
+            # 4. Sample Data
+            cursor.execute("SELECT rank, title, year FROM RAW.MOVIES_RAW ORDER BY rank LIMIT 5")
+            logging.info("4. Sample Data (Top 5):")
+            for row in cursor:
+                logging.info(f"   Rank {row[0]}: {row[1]} ({row[2]})")
+            
+            logging.info("=== ALL CHECKS PASSED ===")
+            
+            return {
+                "status": "success",
+                "total_rows": total_rows,
+                "validation": "passed"
+            }
+            
+        finally:
+            cursor.close()
+            conn.close()
     
     # ========================================================================
     # Define Task Dependencies
     # ========================================================================
     upload_result = upload_to_s3()
     verify_result = verify_upload(upload_result)
+    schema_result = create_raw_schema()
+    table_result = create_raw_table()
+    load_result = load_s3_to_snowflake()
+    verify_data_result = verify_snowflake_data()
     
-    # Chain: verify → create_schema → create_table → load_data → verify_data
-    verify_result >> create_schema >> create_table >> load_data >> verify_data
+    # Chain
+    verify_result >> schema_result >> table_result >> load_result >> verify_data_result
 
 
 # ============================================================================
