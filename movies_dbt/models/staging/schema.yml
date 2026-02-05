@@ -1,0 +1,326 @@
+version: 2
+
+models:
+  # ===========================================================================
+  # MODEL: stg_movies_cleaned
+  # ===========================================================================
+  - name: stg_movies_cleaned
+    description: |
+      **Layer 1: Basic Data Cleaning**
+      
+      This model performs foundational data cleaning:
+      - Rename columns to snake_case
+      - Trim whitespace
+      - Remove duplicate movies (keeping best rank)
+      - Convert empty strings to NULL
+      - Preserve NULL values (don't convert to 0)
+      
+      **Input:** movies_raw (100 rows)
+      **Output:** 95 rows (removed 5 duplicate pairs)
+      
+      **Duplicates Removed:**
+      1. Rashomon (1950) - kept rank 45, removed rank 79
+      2. Paths of Glory (1957) - kept rank 76, removed rank 92
+      3. The Bridge on the River Kwai (1957) - kept rank 73, removed rank 97
+      4. The Third Man (1949) - kept rank 47, removed rank 71
+      5. The Great Dictator (1940) - kept rank 43, removed rank 75
+    
+    columns:
+      - name: movie_id
+        description: "Primary key (from rank 1-100)"
+        tests:
+          - not_null
+          - unique
+      
+      - name: movie_title
+        description: "Movie title (trimmed, duplicates removed)"
+        tests:
+          - not_null
+      
+      - name: release_year
+        description: "Release year"
+        tests:
+          - not_null
+      
+      - name: imdb_rating
+        description: "IMDb rating (0-10). NULL preserved (not converted to 0)"
+      
+      - name: rotten_tomatoes_pct
+        description: "Rotten Tomatoes % (0-100). ~3% missing data"
+      
+      - name: metacritic_score
+        description: "Metacritic score (0-100). ~50% missing data"
+      
+      - name: runtime_mins
+        description: "Runtime in minutes"
+      
+      - name: oscars_won
+        description: "Number of Oscars won"
+      
+      - name: box_office_millions
+        description: "Box office revenue in millions USD. ~17% missing"
+      
+      - name: genres_raw
+        description: "Genres (pipe-delimited). Will split in Phase 10. Example: 'Action|Crime|Drama'"
+      
+      - name: director_raw
+        description: "Director name (trimmed). Empty strings converted to NULL"
+      
+      - name: actors_raw
+        description: "Main actors (pipe-delimited). Will split in Phase 10"
+      
+      - name: country_raw
+        description: "Countries (pipe-delimited). Will split in Phase 10"
+      
+      - name: language_raw
+        description: "Languages (pipe-delimited). Will split in Phase 10"
+      
+      - name: loaded_at
+        description: "Timestamp when loaded from S3 to Snowflake"
+        tests:
+          - not_null
+      
+      - name: dbt_updated_at
+        description: "Timestamp when dbt ran this transformation"
+        tests:
+          - not_null
+
+  # ===========================================================================
+  # MODEL: stg_movies_enriched
+  # ===========================================================================
+  - name: stg_movies_enriched
+    description: |
+      **Layer 2: Handle NULLs + Business Logic**
+      
+      This model enriches cleaned data with:
+      - Replace NULL text fields with 'Unknown'
+      - Replace NULL numeric fields with 0 (where appropriate)
+      - Create 6 derived business categories
+      
+      **Input:** stg_movies_cleaned (95 rows)
+      **Output:** 95 rows with enriched columns
+      
+      **New Derived Columns:**
+      1. rating_category - "Masterpiece", "Excellent", "Very Good", etc.
+      2. box_office_category - "Blockbuster", "Major Hit", "Hit", etc.
+      3. oscar_category - "Oscar Winner (5+)", "Oscar Winner (3-4)", etc.
+      4. decade - 1930, 1940, ..., 2010
+      5. era - "Modern Era (2010s+)", "2000s", "1990s", etc.
+      6. runtime_category - "Epic", "Long", "Standard", etc.
+    
+    columns:
+      - name: movie_id
+        description: "Primary key"
+        tests:
+          - not_null
+          - unique
+      
+      - name: movie_title
+        description: "Movie title"
+        tests:
+          - not_null
+      
+      - name: release_year
+        description: "Release year"
+        tests:
+          - not_null
+      
+      - name: director
+        description: "Director (NULL replaced with 'Unknown')"
+        tests:
+          - not_null
+      
+      - name: country
+        description: "Primary country (NULL replaced with 'Unknown')"
+        tests:
+          - not_null
+      
+      - name: language
+        description: "Primary language (NULL replaced with 'Unknown')"
+        tests:
+          - not_null
+      
+      - name: genres_raw
+        description: "Genres (pipe-delimited, for splitting in Phase 10)"
+      
+      - name: actors_raw
+        description: "Actors (pipe-delimited, for splitting in Phase 10)"
+      
+      - name: country_list
+        description: "All countries (pipe-delimited, for splitting in Phase 10)"
+      
+      - name: language_list
+        description: "All languages (pipe-delimited, for splitting in Phase 10)"
+      
+      - name: runtime_mins
+        description: "Runtime in minutes (NULL replaced with 0)"
+        tests:
+          - not_null
+      
+      - name: oscars_won
+        description: "Number of Oscars won (NULL replaced with 0)"
+        tests:
+          - not_null
+      
+      - name: imdb_rating
+        description: "IMDb rating (NULL preserved - no data ≠ score of 0)"
+      
+      - name: rotten_tomatoes_pct
+        description: "Rotten Tomatoes % (NULL preserved)"
+      
+      - name: metacritic_score
+        description: "Metacritic score (NULL preserved)"
+      
+      - name: box_office_millions
+        description: "Box office in millions (NULL replaced with 0)"
+        tests:
+          - not_null
+      
+      # Derived Columns
+      - name: rating_category
+        description: |
+          Rating category based on IMDb score:
+          - 'Masterpiece' (9.0+)
+          - 'Excellent' (8.5-8.9)
+          - 'Very Good' (8.0-8.4)
+          - 'Good' (7.5-7.9)
+          - 'Average' (<7.5)
+          - 'No Rating' (NULL)
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Masterpiece', 'Excellent', 'Very Good', 'Good', 'Average', 'No Rating']
+      
+      - name: box_office_category
+        description: |
+          Box office category:
+          - 'Blockbuster' ($1B+)
+          - 'Major Hit' ($500M-$1B)
+          - 'Hit' ($100M-$500M)
+          - 'Modest' ($0-$100M)
+          - 'Unknown' (no data)
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Blockbuster', 'Major Hit', 'Hit', 'Modest', 'Unknown']
+      
+      - name: oscar_category
+        description: |
+          Oscar wins category:
+          - 'Oscar Winner (5+)'
+          - 'Oscar Winner (3-4)'
+          - 'Oscar Winner (1-2)'
+          - 'No Oscar'
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['Oscar Winner (5+)', 'Oscar Winner (3-4)', 'Oscar Winner (1-2)', 'No Oscar']
+      
+      - name: decade
+        description: "Decade of release (1930, 1940, ..., 2010)"
+        tests:
+          - not_null
+      
+      - name: era
+        description: |
+          Era classification:
+          - 'Modern Era (2010s+)'
+          - '2000s', '1990s', '1980s', etc.
+          - 'Classic Era (<1930)'
+        tests:
+          - not_null
+      
+      - name: runtime_category
+        description: |
+          Runtime category:
+          - 'Epic (3+ hours)' (180+ mins)
+          - 'Long (2.5-3 hours)' (150-179 mins)
+          - 'Standard (2-2.5 hours)' (120-149 mins)
+          - 'Short (1.5-2 hours)' (90-119 mins)
+          - 'Very Short (<1.5 hours)' (<90 mins)
+          - 'Unknown' (no data)
+        tests:
+          - not_null
+      
+      - name: loaded_at
+        description: "Original load timestamp"
+        tests:
+          - not_null
+      
+      - name: dbt_updated_at
+        description: "dbt transformation timestamp"
+        tests:
+          - not_null
+
+  # ===========================================================================
+  # DATA QUALITY REPORT (Compact Version - 88 lines)
+  # ===========================================================================
+  - name: data_quality_report
+    description: |
+      **Data Quality Monitoring - Compact Version**
+      
+      Automated quality checks on staging models (13 checks across 6 categories).
+      
+      **Categories:**
+      1. Row Counts (2 checks) - Verify cleaned and enriched have 95 rows
+      2. NULL Checks (3 checks) - Required fields not NULL
+      3. Duplicates (1 check) - No duplicate movie_id
+      4. Range Checks (2 checks) - IMDb 0-10, RT 0-100
+      5. Statistics (3 checks) - Min/Max/Avg IMDb (INFO)
+      6. Enrichment (2 checks) - Categories populated
+      
+      **Usage:**
+      ```sql
+      -- See all checks
+      SELECT * FROM data_quality_report;
+      
+      -- See only failures
+      SELECT * FROM data_quality_report WHERE status = 'FAIL';
+      
+      -- Summary by category
+      SELECT category, 
+             SUM(CASE WHEN status = 'PASS' THEN 1 ELSE 0 END) as passed,
+             SUM(CASE WHEN status = 'FAIL' THEN 1 ELSE 0 END) as failed
+      FROM data_quality_report
+      WHERE status != 'INFO'
+      GROUP BY category;
+      ```
+    
+    columns:
+      - name: category
+        description: "Check category: Row Counts, NULL Checks, Duplicates, Range Checks, Statistics, Enrichment"
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - 'Row Counts'
+                - 'NULL Checks'
+                - 'Duplicates'
+                - 'Range Checks'
+                - 'Statistics'
+                - 'Enrichment'
+      
+      - name: check_name
+        description: "Specific check name (e.g., 'Total Rows (Cleaned)', 'NULL movie_id')"
+        tests:
+          - not_null
+      
+      - name: value
+        description: "Actual value from the check"
+        tests:
+          - not_null
+      
+      - name: expected
+        description: "Expected value for comparison"
+        tests:
+          - not_null
+      
+      - name: status
+        description: "Check result: PASS (passed), FAIL (failed), INFO (informational only)"
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - 'PASS'
+                - 'FAIL'
+                - 'INFO'
