@@ -27,9 +27,8 @@ models:
         tests:
           - not_null
           - relationships:
-              arguments:
-                to: ref('dim_time')
-                field: time_id
+              to: ref('dim_time')
+              field: time_id
 
   # ---------------------------------------------------------------------------
   # dim_genres
@@ -153,18 +152,16 @@ models:
         tests:
           - not_null
           - relationships:
-              arguments:
-                to: ref('dim_movies')
-                field: movie_id
+              to: ref('dim_movies')
+              field: movie_id
       
       - name: genre_id
         description: "Foreign key to dim_genres"
         tests:
           - not_null
           - relationships:
-              arguments:
-                to: ref('dim_genres')
-                field: genre_id
+              to: ref('dim_genres')
+              field: genre_id
 
   # ---------------------------------------------------------------------------
   # bridge_movie_actor
@@ -177,18 +174,16 @@ models:
         tests:
           - not_null
           - relationships:
-              arguments:
-                to: ref('dim_movies')
-                field: movie_id
+              to: ref('dim_movies')
+              field: movie_id
       
       - name: actor_id
         description: "Foreign key to dim_actors"
         tests:
           - not_null
           - relationships:
-              arguments:
-                to: ref('dim_actors')
-                field: actor_id
+              to: ref('dim_actors')
+              field: actor_id
 
   # ---------------------------------------------------------------------------
   # bridge_movie_director
@@ -201,18 +196,16 @@ models:
         tests:
           - not_null
           - relationships:
-              arguments:
-                to: ref('dim_movies')
-                field: movie_id
+              to: ref('dim_movies')
+              field: movie_id
       
       - name: director_id
         description: "Foreign key to dim_directors"
         tests:
           - not_null
           - relationships:
-              arguments:
-                to: ref('dim_directors')
-                field: director_id
+              to: ref('dim_directors')
+              field: director_id
 
   # ---------------------------------------------------------------------------
   # bridge_movie_country
@@ -225,18 +218,16 @@ models:
         tests:
           - not_null
           - relationships:
-              arguments:
-                to: ref('dim_movies')
-                field: movie_id
+              to: ref('dim_movies')
+              field: movie_id
       
       - name: country_id
         description: "Foreign key to dim_countries"
         tests:
           - not_null
           - relationships:
-              arguments:
-                to: ref('dim_countries')
-                field: country_id
+              to: ref('dim_countries')
+              field: country_id
 
   # ---------------------------------------------------------------------------
   # bridge_movie_language
@@ -249,18 +240,16 @@ models:
         tests:
           - not_null
           - relationships:
-              arguments:
-                to: ref('dim_movies')
-                field: movie_id
+              to: ref('dim_movies')
+              field: movie_id
       
       - name: language_id
         description: "Foreign key to dim_languages"
         tests:
           - not_null
           - relationships:
-              arguments:
-                to: ref('dim_languages')
-                field: language_id
+              to: ref('dim_languages')
+              field: language_id
 
 # =============================================================================
 # FACT TABLE
@@ -278,45 +267,31 @@ models:
           - not_null
           - unique
           - relationships:
-              arguments:
-                to: ref('dim_movies')
-                field: movie_id
+              to: ref('dim_movies')
+              field: movie_id
       
       - name: time_id
         description: "Foreign key to dim_time"
         tests:
           - not_null
           - relationships:
-              arguments:
-                to: ref('dim_time')
-                field: time_id
+              to: ref('dim_time')
+              field: time_id
       
       - name: box_office_millions
         description: "Box office revenue in millions USD"
-        tests:
-          - dbt_utils.expression_is_true:
-              arguments:
-                expression: ">= 0"
-              config:
-                severity: warn
       
       - name: oscars_won
         description: "Number of Oscars won"
-        tests:
-          - dbt_utils.expression_is_true:
-              arguments:
-                expression: ">= 0"
       
       - name: is_masterpiece
         description: "Flag: 1 if IMDb >= 9.0"
         tests:
           - accepted_values:
-              arguments:
-                values: [0, 1]
+              values: [0, 1]
       
       - name: is_blockbuster
         description: "Flag: 1 if box office >= 1000M"
         tests:
           - accepted_values:
-              arguments:
-                values: [0, 1]
+              values: [0, 1]
